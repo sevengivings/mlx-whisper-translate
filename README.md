@@ -82,6 +82,18 @@ python mlx-whisper-translate.py "/path/to/folder"
 python mlx-whisper-translate.py ./target_files --lang ja --target-lang ko
 ```
 
+Whisper 모델 지정 예시(더 빠른 모델 사용):
+
+```bash
+python mlx-whisper-translate.py ./target_files --whisper-model mlx-community/whisper-small
+```
+
+Whisper 정확도 우선 모드:
+
+```bash
+python mlx-whisper-translate.py ./target_files --whisper-accurate
+```
+
 ## 5) 주요 옵션
 
 ```bash
@@ -89,6 +101,8 @@ python mlx-whisper-translate.py --help
 ```
 
 - `input_path`: 처리할 파일/폴더 경로 (기본 `./target_files`)
+- `--whisper-model`: Whisper 모델 (기본 `mlx-community/whisper-medium`)
+- `--whisper-accurate`: Whisper 정확도 우선 옵션 사용 (기본은 속도 우선)
 - `--lang`: Whisper 입력 언어 코드 (기본 `ja`)
 - `--target-lang`: 번역 대상 언어 코드 (기본 `ko`)
 - `--progress-every`: 진행 로그 간격 (기본 `10`)
@@ -112,6 +126,9 @@ python mlx-whisper-translate.py --help
 
 ## 7) 성능 팁
 
+- Whisper 기본값은 속도 우선 프리셋 + `mlx-community/whisper-medium`
+- 더 빠르게 처리하려면 `--whisper-model mlx-community/whisper-small` 사용
+- 정확도를 높이고 싶으면 `--whisper-accurate` 사용(대신 느려질 수 있음)
 - 가장 큰 영향: 번역 모델 크기
   - 현재 기본: `mlx-community/translategemma-4b-it-4bit`
 - `--max-retries 0`으로 재시도 비활성화 시 속도 개선 가능
@@ -123,4 +140,3 @@ python mlx-whisper-translate.py --help
 - `ffmpeg` 오류: 설치 확인 후 재실행
 - 언어 코드 오류: `--lang`, `--target-lang` 값 확인
 - HF 경고: `HF_TOKEN` 설정 시 다운로드 속도/요청 한도 개선
-

@@ -17,7 +17,7 @@ except ImportError:
 INPUT_PATH = "./target_files"  # 변환할 대상(폴더 또는 파일 1개)
 EXTENSIONS = (".mp3", ".wav", ".m4a", ".mp4", ".mkv") # 처리할 확장자
 
-WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+WHISPER_MODEL = "mlx-community/whisper-medium"
 TRANSLATE_MODEL = "mlx-community/translategemma-4b-it-4bit"
 TRANSLATE_MAX_TOKENS = 100
 DEFAULT_WHISPER_LANGUAGE = "ja"
@@ -27,8 +27,16 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
 
-# Whisper 옵션 (영화/드라마 자막용: 정확도 우선 프리셋)
-WHISPER_OPTIONS = {
+# Whisper 옵션 (속도 우선 프리셋)
+WHISPER_OPTIONS_FAST = {
+    "word_timestamps": False,                 # 단어 타임스탬프 비활성화로 속도 개선
+    "condition_on_previous_text": False,      # 문맥 연결 비활성화로 속도 개선
+    "temperature": 0.0,                       # 단일 디코딩 패스
+    "no_speech_threshold": 0.45,
+}
+
+# Whisper 옵션 (정확도 우선 프리셋)
+WHISPER_OPTIONS_ACCURATE = {
     "word_timestamps": True,                  # 단어 단위 타임스탬프
     "condition_on_previous_text": True,       # 이전 문맥 유지
     "temperature": (0.0, 0.2, 0.4),           # 저온도부터 단계적으로 fallback
@@ -256,8 +264,18 @@ def validate_language_pair(tokenizer, source_lang, target_lang):
 def main():
     parser = argparse.ArgumentParser(description="오디오/영상 파일에서 자막(SRT) 생성")
     parser.add_argument("input_path", nargs="?", default=INPUT_PATH, help="처리할 파일/폴더 경로")
+    parser.add_argument(
+        "--whisper-model",
+        default=WHISPER_MODEL,
+        help=f"Whisper 모델 (기본: {WHISPER_MODEL})",
+    )
     parser.add_argument("--lang", default=DEFAULT_WHISPER_LANGUAGE, help="Whisper 입력 언어 코드 (기본: ja)")
     parser.add_argument("--target-lang", default=DEFAULT_TARGET_LANGUAGE, help="번역 대상 언어 코드 (기본: ko)")
+    parser.add_argument(
+        "--whisper-accurate",
+        action="store_true",
+        help="Whisper 정확도 우선 옵션 사용 (기본은 속도 우선)",
+    )
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -294,7 +312,7 @@ def main():
         return
 
     input_path = args.input_path
-    whisper_options = dict(WHISPER_OPTIONS)
+    whisper_options = dict(WHISPER_OPTIONS_ACCURATE if args.whisper_accurate else WHISPER_OPTIONS_FAST)
     whisper_options["language"] = args.lang
     # mlx_whisper.transcribe 내부 tqdm 진행바 활성화 (False일 때 진행바 표시)
     whisper_options["verbose"] = False
@@ -364,8 +382,11 @@ def main():
                 print("  - 경고: 기존 원문 SRT를 읽지 못해 Whisper를 다시 실행합니다.")
 
         if segments is None or not segments:
-            print(f"  - 음성 인식 및 추출 중... (language={args.lang})")
-            result = mlx_whisper.transcribe(file_path, path_or_hf_repo=WHISPER_MODEL, **whisper_options)
+            print(
+                f"  - 음성 인식 및 추출 중... "
+                f"(model={args.whisper_model}, language={args.lang}, accurate={args.whisper_accurate})"
+            )
+            result = mlx_whisper.transcribe(file_path, path_or_hf_repo=args.whisper_model, **whisper_options)
             segments = result['segments']
 
         segments, segment_stats = sanitize_segments(segments)
