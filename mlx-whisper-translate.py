@@ -26,6 +26,8 @@ DEFAULT_PROGRESS_EVERY = 10
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
+REPETITIVE_FILTER_MIN_CHARS = 40
+REPETITIVE_FILTER_MIN_REPEATS = 12
 
 # Whisper 옵션 (속도 우선 프리셋)
 WHISPER_OPTIONS_FAST = {
@@ -95,12 +97,44 @@ def load_segments_from_srt(path):
         )
     return segments
 
+def is_repetitive_noise_text(text):
+    normalized = re.sub(r"\s+", "", text)
+    normalized = re.sub(r"[、。,.!?！？…・「」『』（）()\[\]{}\"'`~^_|\\/:\-+=*#@$%&;]+", "", normalized)
+
+    if len(normalized) < REPETITIVE_FILTER_MIN_CHARS:
+        return False
+
+    unique_chars = set(normalized)
+    if len(unique_chars) == 1:
+        return True
+
+    if len(unique_chars) <= 2:
+        max_ratio = max(normalized.count(ch) / len(normalized) for ch in unique_chars)
+        if max_ratio >= 0.8:
+            return True
+
+    max_unit_len = min(6, len(normalized) // 2)
+    for unit_len in range(1, max_unit_len + 1):
+        repeats = len(normalized) // unit_len
+        if repeats < REPETITIVE_FILTER_MIN_REPEATS:
+            continue
+
+        unit = normalized[:unit_len]
+        rebuilt = unit * repeats + unit[: len(normalized) % unit_len]
+        match_count = sum(1 for a, b in zip(normalized, rebuilt) if a == b)
+        match_ratio = match_count / len(normalized)
+        if match_ratio >= 0.9:
+            return True
+
+    return False
+
 def sanitize_segments(segments, min_duration=0.1):
     cleaned = []
     dropped_empty = 0
     dropped_invalid = 0
     fixed_duration = 0
     dropped_duplicate = 0
+    dropped_repetitive = 0
     seen_texts = set()
 
     for seg in segments:
@@ -110,6 +144,10 @@ def sanitize_segments(segments, min_duration=0.1):
 
         if not text:
             dropped_empty += 1
+            continue
+
+        if is_repetitive_noise_text(text):
+            dropped_repetitive += 1
             continue
 
         # 전역 중복 제거: 이미 한 번 나온 문장은 이후 모두 제거
@@ -133,6 +171,7 @@ def sanitize_segments(segments, min_duration=0.1):
         "dropped_invalid": dropped_invalid,
         "fixed_duration": fixed_duration,
         "dropped_duplicate": dropped_duplicate,
+        "dropped_repetitive": dropped_repetitive,
     }
     return cleaned, stats
 
@@ -395,13 +434,15 @@ def main():
             or segment_stats["dropped_invalid"] > 0
             or segment_stats["fixed_duration"] > 0
             or segment_stats["dropped_duplicate"] > 0
+            or segment_stats["dropped_repetitive"] > 0
         ):
             print(
                 "  - 구간 정리: "
                 f"빈 텍스트 제거 {segment_stats['dropped_empty']}개, "
                 f"역전 구간 제거 {segment_stats['dropped_invalid']}개, "
                 f"0초 구간 보정 {segment_stats['fixed_duration']}개, "
-                f"중복 문장 제거 {segment_stats['dropped_duplicate']}개"
+                f"중복 문장 제거 {segment_stats['dropped_duplicate']}개, "
+                f"반복 노이즈 제거 {segment_stats['dropped_repetitive']}개"
             )
 
         # Step B: 원문 SRT 저장
