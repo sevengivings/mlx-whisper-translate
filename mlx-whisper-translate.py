@@ -144,6 +144,17 @@ def sanitize_translated_text(text):
     # 남아있는 단순 특수 토큰 제거 (예: <end_of_turn>)
     cleaned = re.sub(r"<[a-zA-Z_][a-zA-Z0-9_]*>", "", cleaned)
     cleaned = "\n".join(line.strip() for line in cleaned.splitlines()).strip()
+
+    # 괄호로만 감싼 메타 설명문 제거
+    # 예: "(No text provided...)", "(음식을 묘사하는 단어...)"
+    if re.fullmatch(r"\s*\([^()]+\)\s*", cleaned):
+        return ""
+
+    # 문장 내부 괄호 구절 제거
+    # 예: "(이것이) 뜨겁네요." -> "뜨겁네요."
+    cleaned = re.sub(r"\([^()]*\)", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
     return cleaned
 
 def confirm_overwrite(path):
