@@ -28,6 +28,9 @@ DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
 REPETITIVE_FILTER_MIN_CHARS = 40
 REPETITIVE_FILTER_MIN_REPEATS = 12
+REPETITIVE_FILTER_SUFFIX_MIN_CHARS = 24
+REPETITIVE_FILTER_SUFFIX_MAX_UNIT_LEN = 3
+REPETITIVE_FILTER_TOKEN_MAX_LEN = 4
 
 # Whisper 옵션 (속도 우선 프리셋)
 WHISPER_OPTIONS_FAST = {
@@ -104,6 +107,10 @@ def is_repetitive_noise_text(text):
     if len(normalized) < REPETITIVE_FILTER_MIN_CHARS:
         return False
 
+    # 접미부에 동일 문자가 길게 반복되는 경우
+    if re.search(r"(.)\1{23,}$", normalized):
+        return True
+
     unique_chars = set(normalized)
     if len(unique_chars) == 1:
         return True
@@ -125,6 +132,32 @@ def is_repetitive_noise_text(text):
         match_ratio = match_count / len(normalized)
         if match_ratio >= 0.9:
             return True
+
+    # 문장 앞부분은 정상이어도, 끝부분이 짧은 단위(예: "あ", "うん") 반복 노이즈인 케이스 감지
+    for unit_len in range(1, REPETITIVE_FILTER_SUFFIX_MAX_UNIT_LEN + 1):
+        if len(normalized) < unit_len * REPETITIVE_FILTER_MIN_REPEATS:
+            continue
+        unit = normalized[-unit_len:]
+        repeat_chars = 0
+        idx = len(normalized)
+        while idx >= unit_len and normalized[idx - unit_len : idx] == unit:
+            repeat_chars += unit_len
+            idx -= unit_len
+        if repeat_chars >= REPETITIVE_FILTER_SUFFIX_MIN_CHARS:
+            return True
+
+    # 쉼표/구두점으로 분리되는 반복 감지 ("..., あ、あ、あ...", "..., うん、うん、うん...")
+    tokens = re.findall(r"[^\s、。,.!?！？…・「」『』（）()\[\]{}\"'`~^_|\\/:\-+=*#@$%&;]+", text)
+    if len(tokens) >= REPETITIVE_FILTER_MIN_REPEATS:
+        last = tokens[-1]
+        if len(last) <= REPETITIVE_FILTER_TOKEN_MAX_LEN:
+            run = 1
+            idx = len(tokens) - 2
+            while idx >= 0 and tokens[idx] == last:
+                run += 1
+                idx -= 1
+            if run >= REPETITIVE_FILTER_MIN_REPEATS:
+                return True
 
     return False
 
