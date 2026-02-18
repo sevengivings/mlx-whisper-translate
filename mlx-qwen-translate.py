@@ -3,13 +3,15 @@ import subprocess
 import sys
 
 INPUT_PATH = "./target_files"
-WHISPER_MODEL = "mlx-community/whisper-medium"
-DEFAULT_WHISPER_LANGUAGE = "ja"
+ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-4bit"
+DEFAULT_SOURCE_LANGUAGE = "ja"
 DEFAULT_TARGET_LANGUAGE = "ko"
 DEFAULT_PROGRESS_EVERY = 10
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
+DEFAULT_CHUNK_DURATION = 30.0
+DEFAULT_MIN_CHUNK_DURATION = 1.0
 DEFAULT_MAX_SECONDS = 0.0
 
 
@@ -23,42 +25,48 @@ def run_step(cmd: list[str], label: str) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="(호환 래퍼) Whisper 추출 + TranslateGemma 번역을 순차 실행"
+        description="(호환 래퍼) Qwen ASR 추출 + TranslateGemma 번역을 순차 실행"
     )
     parser.add_argument("input_path", nargs="?", default=INPUT_PATH, help="처리할 파일/폴더 경로")
-    parser.add_argument("--whisper-model", default=WHISPER_MODEL, help=f"Whisper 모델 (기본: {WHISPER_MODEL})")
-    parser.add_argument("--lang", default=DEFAULT_WHISPER_LANGUAGE, help="Whisper 입력 언어 코드 (기본: ja)")
+    parser.add_argument("--asr-model", default=ASR_MODEL, help=f"ASR 모델 (기본: {ASR_MODEL})")
+    parser.add_argument("--lang", default=DEFAULT_SOURCE_LANGUAGE, help="원문 언어 코드 (기본: ja)")
     parser.add_argument("--target-lang", default=DEFAULT_TARGET_LANGUAGE, help="번역 대상 언어 코드 (기본: ko)")
-    parser.add_argument("--whisper-accurate", action="store_true", help="Whisper 정확도 우선 옵션 사용")
+    parser.add_argument("--force", action="store_true", help="기존 SRT가 있어도 확인 없이 덮어쓰기")
+    parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS, help="테스트용 최대 처리 길이(초)")
+    parser.add_argument("--chunk-duration", type=float, default=DEFAULT_CHUNK_DURATION, help="Qwen ASR 청크 길이(초)")
+    parser.add_argument("--min-chunk-duration", type=float, default=DEFAULT_MIN_CHUNK_DURATION, help="Qwen ASR 최소 청크 길이(초)")
+    parser.add_argument("--vad-preprocess", action="store_true", help="ffmpeg silencedetect 기반 VAD 전처리 사용")
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY, help="번역 진행 로그 간격")
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="구간 번역 재시도 횟수")
     parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="재시도 대기 시간(초)")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="번역 배치 크기")
-    parser.add_argument("--force", action="store_true", help="기존 SRT가 있어도 확인 없이 덮어쓰기")
-    parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS, help="테스트용 최대 처리 길이(초)")
     args = parser.parse_args()
 
     print("안내: 이 파일은 호환 래퍼입니다.")
-    print("  - 원문 추출: mlx-whisper-transcribe.py")
+    print("  - 원문 추출: mlx-qwen-transcribe.py")
     print("  - 번역 변환: mlx-translategemma.py")
 
-    whisper_cmd = [
+    qwen_cmd = [
         sys.executable,
-        "mlx-whisper-transcribe.py",
+        "mlx-qwen-transcribe.py",
         args.input_path,
-        "--whisper-model",
-        args.whisper_model,
+        "--asr-model",
+        args.asr_model,
         "--lang",
         args.lang,
+        "--chunk-duration",
+        str(args.chunk_duration),
+        "--min-chunk-duration",
+        str(args.min_chunk_duration),
     ]
-    if args.whisper_accurate:
-        whisper_cmd.append("--whisper-accurate")
+    if args.vad_preprocess:
+        qwen_cmd.append("--vad-preprocess")
     if args.force:
-        whisper_cmd.append("--force")
+        qwen_cmd.append("--force")
     if args.max_seconds and args.max_seconds > 0:
-        whisper_cmd.extend(["--max-seconds", str(args.max_seconds)])
+        qwen_cmd.extend(["--max-seconds", str(args.max_seconds)])
 
-    rc = run_step(whisper_cmd, "Whisper 원문 추출")
+    rc = run_step(qwen_cmd, "Qwen 원문 추출")
     if rc != 0:
         raise SystemExit(rc)
 
@@ -81,6 +89,7 @@ def main() -> None:
     ]
     if args.force:
         translate_cmd.append("--force")
+
     rc = run_step(translate_cmd, "TranslateGemma 번역")
     if rc != 0:
         raise SystemExit(rc)

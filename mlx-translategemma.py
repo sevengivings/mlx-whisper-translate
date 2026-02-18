@@ -1,0 +1,407 @@
+import argparse
+import datetime
+import os
+import re
+import time
+
+from mlx_lm import generate, load
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
+from subtitle_cleanup import sanitize_segments
+
+INPUT_PATH = "./target_files"
+EXTENSIONS = (".mp3", ".wav", ".m4a", ".mp4", ".mkv")
+TRANSLATE_MODEL = "mlx-community/translategemma-4b-it-4bit"
+TRANSLATE_MAX_TOKENS = 100
+DEFAULT_SOURCE_LANGUAGE = "ja"
+DEFAULT_TARGET_LANGUAGE = "ko"
+DEFAULT_PROGRESS_EVERY = 10
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_RETRY_DELAY = 0.5
+DEFAULT_BATCH_SIZE = 1
+
+
+def format_time(seconds: float) -> str:
+    td = datetime.timedelta(seconds=seconds)
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    millis = int(td.microseconds / 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def parse_timecode(timecode: str) -> float:
+    hhmmss, ms = timecode.split(",")
+    hh, mm, ss = hhmmss.split(":")
+    return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(ms) / 1000.0
+
+
+def load_segments_from_srt(path: str) -> list[dict]:
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        return []
+
+    segments = []
+    blocks = content.split("\n\n")
+    for block in blocks:
+        lines = [line.rstrip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        time_line_index = 1 if len(lines) > 1 and "-->" in lines[1] else 0
+        if "-->" not in lines[time_line_index]:
+            continue
+        start_str, end_str = [p.strip() for p in lines[time_line_index].split("-->", 1)]
+        text = "\n".join(lines[time_line_index + 1 :]).strip()
+        segments.append(
+            {"start": parse_timecode(start_str), "end": parse_timecode(end_str), "text": text}
+        )
+    return segments
+
+
+def confirm_overwrite(path: str) -> bool:
+    answer = input(f"  - 기존 SRT가 있습니다. 덮어쓸까요? ({path}) [y/N]: ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def sanitize_translated_text(text: str | None) -> str:
+    if text is None:
+        return ""
+
+    cleaned = text.strip()
+    cleaned = cleaned.split("<end_of_turn>", 1)[0]
+    cleaned = cleaned.split("<start_of_turn>", 1)[0]
+    for token in ("<bos>", "<eos>", "<pad>", "</s>"):
+        cleaned = cleaned.replace(token, "")
+    cleaned = re.sub(r"<[a-zA-Z_][a-zA-Z0-9_]*>", "", cleaned)
+    cleaned = "\n".join(line.strip() for line in cleaned.splitlines()).strip()
+
+    if re.fullmatch(r"\s*\([^()]+\)\s*", cleaned):
+        return ""
+    cleaned = re.sub(r"\([^()]*\)", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+    meta_patterns = (
+        r"직접적인 번역이 어렵",
+        r"비표준적인 표현",
+        r"문맥이 없(?:는|어서)|맥락이 없(?:는|어서)",
+        r"맥락이 필요",
+        r"정확한 의미를 파악하기 어렵",
+        r"다음과 같이 해석하고 번역",
+        r"무슨 뜻인지 잘 모르겠",
+        r"추가(?:적인)? 문맥",
+        r"cannot\s+translate",
+        r"hard\s+to\s+translate",
+        r"need[s]?\s+more\s+context",
+    )
+    if any(re.search(pat, cleaned, flags=re.IGNORECASE) for pat in meta_patterns):
+        return ""
+    return cleaned
+
+
+def _count_korean_chars(text: str) -> int:
+    return len(re.findall(r"[가-힣]", text))
+
+
+def _count_japanese_chars(text: str) -> int:
+    return len(re.findall(r"[\u3040-\u30ff\u31f0-\u31ff々〆〤]", text))
+
+
+def is_untranslated_output(source_text: str, translated_text: str, target_lang: str) -> bool:
+    s = (source_text or "").strip()
+    t = (translated_text or "").strip()
+    if not t:
+        return True
+
+    # 원문과 완전히 동일하면 미번역으로 간주
+    if s and s == t:
+        return True
+
+    if target_lang.lower() == "ko":
+        ko_count = _count_korean_chars(t)
+        ja_count = _count_japanese_chars(t)
+        # 한국어 문자가 전혀 없고 일본어 문자가 있으면 미번역 가능성 높음
+        if ko_count == 0 and ja_count > 0:
+            return True
+        # 한국어 대비 일본어 비중이 과도하게 높으면 미번역으로 간주
+        if ja_count >= 4 and ja_count > (ko_count * 2):
+            return True
+
+    return False
+
+
+def build_translate_messages(text: str, source_lang: str, target_lang: str) -> list[dict]:
+    return [{
+        "role": "user",
+        "content": [{
+            "type": "text",
+            "source_lang_code": source_lang,
+            "target_lang_code": target_lang,
+            "text": text,
+            "image": None,
+        }],
+    }]
+
+
+def generate_translation_text(model, tokenizer, source_lang: str, target_lang: str, input_text: str) -> str:
+    messages = build_translate_messages(input_text, source_lang, target_lang)
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    raw = generate(
+        model,
+        tokenizer,
+        prompt=prompt,
+        max_tokens=TRANSLATE_MAX_TOKENS,
+        verbose=False,
+    )
+    return sanitize_translated_text(raw)
+
+
+def translate_one_with_retry(model, tokenizer, source_lang, target_lang, text, max_retries, retry_delay, label):
+    total_attempts = max(1, max_retries + 1)
+    for attempt in range(1, total_attempts + 1):
+        try:
+            translated = generate_translation_text(model, tokenizer, source_lang, target_lang, text)
+            if is_untranslated_output(text, translated, target_lang):
+                raise ValueError("미번역/원문 유지 출력 감지")
+            return translated or text
+        except Exception as e:
+            if attempt < total_attempts:
+                print(f"    · 경고: {label} 번역 실패(시도 {attempt}/{total_attempts}) - 재시도합니다. 오류: {e}")
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+            else:
+                print(f"    · 경고: {label} 번역 최종 실패(시도 {attempt}/{total_attempts}). 원문을 그대로 기록합니다.")
+                return text
+
+
+def translate_batch_with_retry(model, tokenizer, source_lang, target_lang, texts, max_retries, retry_delay, label):
+    separator = "|||SEG_SPLIT|||"
+    batch_input = (
+        f"Translate each segment to the target language and keep order. "
+        f"Output only translations separated by {separator}. "
+        f"Total segments: {len(texts)}.\n\n"
+        + separator.join(texts)
+    )
+    total_attempts = max(1, max_retries + 1)
+    for attempt in range(1, total_attempts + 1):
+        try:
+            translated = generate_translation_text(model, tokenizer, source_lang, target_lang, batch_input)
+            parts = [sanitize_translated_text(part) for part in translated.split(separator)]
+            if len(parts) == len(texts) and all(parts):
+                for src, out in zip(texts, parts):
+                    if is_untranslated_output(src, out, target_lang):
+                        raise ValueError("배치 출력에 미번역/원문 유지 구간 포함")
+                return parts
+            raise ValueError(f"배치 분할 실패: expected={len(texts)}, got={len(parts)}")
+        except Exception as e:
+            if attempt < total_attempts:
+                print(f"    · 경고: {label} 배치 번역 실패(시도 {attempt}/{total_attempts}) - 재시도합니다. 오류: {e}")
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+            else:
+                return None
+
+
+def validate_language_pair(tokenizer, source_lang: str, target_lang: str) -> tuple[bool, str | None]:
+    try:
+        messages = build_translate_messages("test", source_lang, target_lang)
+        tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="TranslateGemma(MLX)로 -original.srt를 번역 SRT로 변환")
+    parser.add_argument("input_path", nargs="?", default=INPUT_PATH, help="처리할 파일/폴더 경로")
+    parser.add_argument("--original-srt", default=None, help="번역할 원문 SRT 파일 경로(직접 지정)")
+    parser.add_argument("--output-srt", default=None, help="번역 결과 SRT 파일 경로(직접 지정)")
+    parser.add_argument("--lang", default=DEFAULT_SOURCE_LANGUAGE, help="원문 언어 코드 (기본: ja)")
+    parser.add_argument("--target-lang", default=DEFAULT_TARGET_LANGUAGE, help="번역 대상 언어 코드 (기본: ko)")
+    parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY, help="번역 진행 로그 간격")
+    parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="번역 재시도 횟수")
+    parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="재시도 대기 시간(초)")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="번역 배치 크기")
+    parser.add_argument("--force", action="store_true", help="기존 번역 .srt를 확인 없이 덮어쓰기")
+    args = parser.parse_args()
+
+    if args.output_srt and not args.original_srt:
+        print("오류: --output-srt를 사용하려면 --original-srt도 함께 지정해야 합니다.")
+        return
+
+    if args.original_srt:
+        if not os.path.exists(args.original_srt):
+            print(f"오류: 원문 SRT가 존재하지 않습니다. ({args.original_srt})")
+            return
+
+        if args.output_srt:
+            translated_output_path = args.output_srt
+        elif args.original_srt.endswith("-original.srt"):
+            translated_output_path = args.original_srt[:-13] + ".srt"
+        else:
+            translated_output_path = args.original_srt + ".translated.srt"
+
+        jobs = [{
+            "label": os.path.basename(args.original_srt),
+            "original_srt": args.original_srt,
+            "translated_srt": translated_output_path,
+        }]
+    else:
+        if not os.path.exists(args.input_path):
+            print(f"오류: '{args.input_path}' 경로가 존재하지 않습니다.")
+            return
+
+        if os.path.isdir(args.input_path):
+            files = [
+                os.path.join(args.input_path, f)
+                for f in os.listdir(args.input_path)
+                if f.lower().endswith(EXTENSIONS)
+            ]
+            print(f"총 {len(files)}개의 파일을 찾았습니다.\n")
+        elif os.path.isfile(args.input_path):
+            if not args.input_path.lower().endswith(EXTENSIONS):
+                print(f"오류: 지원하지 않는 파일 형식입니다. ({args.input_path})")
+                return
+            files = [args.input_path]
+            print("단일 파일 1개를 처리합니다.\n")
+        else:
+            print(f"오류: 유효한 파일 또는 폴더 경로가 아닙니다. ({args.input_path})")
+            return
+
+        if not files:
+            print("처리할 파일이 없습니다.")
+            return
+
+        jobs = []
+        for file_path in files:
+            base = os.path.splitext(file_path)[0]
+            jobs.append(
+                {
+                    "label": os.path.basename(file_path),
+                    "original_srt": base + "-original.srt",
+                    "translated_srt": base + ".srt",
+                }
+            )
+
+    print(f"--- 모델 로드 중: {TRANSLATE_MODEL} ---")
+    model, tokenizer = load(TRANSLATE_MODEL)
+    ok, err = validate_language_pair(tokenizer, args.lang, args.target_lang)
+    if not ok:
+        print(f"오류: 유효하지 않은 언어 코드 조합입니다. source='{args.lang}', target='{args.target_lang}'")
+        print(f"상세: {err}")
+        return
+
+    for idx, job in enumerate(jobs, start=1):
+        original_output_path = job["original_srt"]
+        translated_output_path = job["translated_srt"]
+        print(f"[{idx}/{len(jobs)}] 작업 시작: {job['label']}")
+
+        if not os.path.exists(original_output_path):
+            print(f"  - 건너뜀: 원문 SRT 없음 ({original_output_path})\n")
+            continue
+        if os.path.exists(translated_output_path) and (not args.force) and (not confirm_overwrite(translated_output_path)):
+            print(f"  - 건너뜀: 기존 파일 유지 ({translated_output_path})\n")
+            continue
+
+        segments = load_segments_from_srt(original_output_path)
+        segments, stats = sanitize_segments(segments, min_duration=0.1, drop_repetitive=True, drop_duplicate=True)
+        if any(stats.values()):
+            print(
+                "  - 구간 정리: "
+                f"빈 텍스트 제거 {stats['dropped_empty']}개, "
+                f"역전 구간 제거 {stats['dropped_invalid']}개, "
+                f"0초 구간 보정 {stats['fixed_duration']}개, "
+                f"중복 문장 제거 {stats['dropped_duplicate']}개, "
+                f"반복 노이즈 제거 {stats['dropped_repetitive']}개"
+            )
+        if not segments:
+            print("  - 자막 구간이 없어 번역을 건너뜁니다.\n")
+            continue
+
+        print(f"  - 번역 및 SRT 생성 중 (구간: {len(segments)}개)...")
+        translate_start = time.time()
+        progress_every = max(1, args.progress_every)
+        batch_size = max(1, args.batch_size)
+        translation_cache: dict[str, str] = {}
+        cache_hits = 0
+        batch_fallbacks = 0
+        progress_bar = tqdm(total=len(segments), desc="  - 번역 진행", unit="seg") if tqdm is not None else None
+
+        with open(translated_output_path, "w", encoding="utf-8") as f:
+            for batch_start in range(0, len(segments), batch_size):
+                batch = segments[batch_start : batch_start + batch_size]
+                translated_batch = [""] * len(batch)
+                uncached_positions = []
+                uncached_texts = []
+
+                for pos, seg in enumerate(batch):
+                    text = seg["text"].strip()
+                    if not text:
+                        translated_batch[pos] = ""
+                    elif text in translation_cache:
+                        translated_batch[pos] = translation_cache[text]
+                        cache_hits += 1
+                    else:
+                        uncached_positions.append(pos)
+                        uncached_texts.append(text)
+
+                if uncached_texts:
+                    if len(uncached_texts) == 1:
+                        pos = uncached_positions[0]
+                        src = uncached_texts[0]
+                        label = f"{batch_start + pos + 1}번 구간"
+                        out = translate_one_with_retry(
+                            model, tokenizer, args.lang, args.target_lang, src, args.max_retries, args.retry_delay, label
+                        )
+                        translated_batch[pos] = out
+                        translation_cache[src] = out
+                    else:
+                        label = f"{batch_start + 1}~{batch_start + len(batch)}번 구간"
+                        result = translate_batch_with_retry(
+                            model, tokenizer, args.lang, args.target_lang, uncached_texts, args.max_retries, args.retry_delay, label
+                        )
+                        if result is None:
+                            batch_fallbacks += 1
+                            for pos, src in zip(uncached_positions, uncached_texts):
+                                item_label = f"{batch_start + pos + 1}번 구간"
+                                out = translate_one_with_retry(
+                                    model, tokenizer, args.lang, args.target_lang, src, args.max_retries, args.retry_delay, item_label
+                                )
+                                translated_batch[pos] = out
+                                translation_cache[src] = out
+                        else:
+                            for pos, src, out in zip(uncached_positions, uncached_texts, result):
+                                out = out or src
+                                translated_batch[pos] = out
+                                translation_cache[src] = out
+
+                for pos, seg in enumerate(batch):
+                    i = batch_start + pos
+                    start_time = format_time(seg["start"])
+                    end_time = format_time(seg["end"])
+                    f.write(f"{i + 1}\n{start_time} --> {end_time}\n{translated_batch[pos]}\n\n")
+
+                current = batch_start + len(batch)
+                if progress_bar is not None:
+                    progress_bar.update(len(batch))
+                elif current % progress_every == 0 or current == len(segments):
+                    elapsed = time.time() - translate_start
+                    print(f"    · 번역 진행: {current}/{len(segments)} ({elapsed:.1f}s, cache hit {cache_hits})")
+
+        if progress_bar is not None:
+            progress_bar.close()
+        print(f"  - 번역 캐시 히트: {cache_hits}개")
+        print(f"  - 배치 폴백 횟수: {batch_fallbacks}회")
+        print(f"  - 번역 SRT 완료: {translated_output_path}\n")
+
+    print("==========================================")
+    print("TranslateGemma 번역 작업이 완료되었습니다!")
+
+
+if __name__ == "__main__":
+    main()

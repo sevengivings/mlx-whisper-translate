@@ -1,41 +1,49 @@
 # mlx-whisper-translate
 
-오디오/영상 파일에서 자막을 만들고, 한국어(또는 원하는 언어)로 번역하는 스크립트입니다.
+로컬(Apple Silicon + MLX)에서 오디오/영상 파일의 자막을 생성하고 번역하는 스크립트 모음입니다.
+
+현재는 기능이 분리되어 있습니다.
+
+- ASR(Whisper): `mlx-whisper-transcribe.py`
+- ASR(Qwen): `mlx-qwen-transcribe.py`
+- 번역(TranslateGemma): `mlx-translategemma.py`
+- 호환 래퍼(기존 흐름 유지):
+  - Whisper + TranslateGemma: `mlx-whisper-translate.py`
+  - Qwen + TranslateGemma: `mlx-qwen-translate.py`
+
+공통 자막 정리(반복 노이즈/중복/구간 보정)는 `subtitle_cleanup.py`를 공유합니다.
+
+## 1) 출력 파일 규칙
+
+기본 출력:
 
 - 원문 자막: `파일명-original.srt`
 - 번역 자막: `파일명.srt`
 
-## 1) 용도
+직접 지정 옵션:
 
-- Whisper(MLX)로 음성 인식 후 SRT 생성
-- TranslateGemma(MLX)로 구간별 번역 SRT 생성
-- 기존 `-original.srt`가 있으면 Whisper를 생략하고 번역만 수행 가능
+- 원문 출력 파일 지정: `--original-output` (Whisper/Qwen transcribe, 단일 파일 입력 전용)
+- 번역 입력/출력 지정:
+  - `--original-srt`
+  - `--output-srt`
 
-## 2) 동작 조건 / 특징
+## 2) 설치
 
-- 지원 입력 확장자: `.mp3`, `.wav`, `.m4a`, `.mp4`, `.mkv`
-- 입력은 파일 1개 또는 폴더 전체
-- `ffmpeg`가 반드시 필요
-- `HF_TOKEN`이 없으면 경고만 출력(동작은 가능)
-- 자막 정리 로직:
-  - 빈 텍스트 구간 제거
-  - `end < start` 구간 제거
-  - `end == start` 구간은 0.1초 보정
-  - 긴 반복 패턴 노이즈 자막 제거 (예: `あ、あ、あ...`, `うっうっうっ...`)
-  - 동일 문장은 파일 전체에서 1회만 유지, 이후 중복 제거
-- 정리 후 자막 구간이 0개면 번역 단계 자동 생략
-- 번역 실패 시 재시도 후 최종 실패하면 원문으로 대체
-- 번역 결과의 특수 토큰(`<end_of_turn>` 등) 자동 정리
+필수:
 
-## 3) 설치
+- Python 3.10 이상 (권장: 3.12)
+- Apple Silicon + MLX 환경
 
-Apple Silicon + Python 가상환경 기준 예시입니다.
+참고:
+
+- 시스템 `python3`가 3.9인 경우 일부 문법(`str | None`) 때문에 실행되지 않습니다.
+- 반드시 `.venv` 인터프리터로 실행하세요.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install mlx-whisper mlx-lm tqdm
+pip install -r requirements.txt
 ```
 
 `ffmpeg` 설치:
@@ -50,94 +58,141 @@ brew install ffmpeg
 export HF_TOKEN="hf_xxx"
 ```
 
-영구 적용(zsh):
+## 3) 스크립트별 사용법
+
+### A. Whisper로 원문 SRT만 생성
 
 ```bash
-echo 'export HF_TOKEN="hf_xxx"' >> ~/.zshrc
-source ~/.zshrc
+.venv/bin/python mlx-whisper-transcribe.py "./target_files" --lang ja
 ```
 
-## 4) 사용 방법
+자주 쓰는 옵션:
 
-기본 실행:
+- `--whisper-model`
+- `--whisper-accurate`
+- `--force`
+- `--max-seconds` (테스트용 앞부분만 처리)
+- `--original-output` (단일 파일 입력 시 출력 파일명 지정)
+
+예시(3분 테스트 + 출력명 지정):
 
 ```bash
-python mlx-whisper-translate.py
+.venv/bin/python mlx-whisper-transcribe.py "/path/to/input.mp4" \
+  --max-seconds 180 \
+  --force \
+  --original-output "/path/to/whisper-original-3m.srt"
 ```
 
-특정 파일 1개:
+### B. Qwen으로 원문 SRT만 생성
 
 ```bash
-python mlx-whisper-translate.py "/path/to/input.mp4"
+.venv/bin/python mlx-qwen-transcribe.py "./target_files" --lang ja
 ```
 
-특정 폴더 전체:
+자주 쓰는 옵션:
+
+- `--asr-model` (기본: `mlx-community/Qwen3-ASR-1.7B-4bit`)
+- `--vad-preprocess` (VAD 전처리)
+- `--chunk-duration`, `--min-chunk-duration`
+- `--max-seconds` (테스트용 앞부분만 처리)
+- `--max-sub-duration`, `--max-sub-chars`, `--min-sub-duration` (SRT 후처리 분할)
+- `--force`
+- `--original-output` (단일 파일 입력 시 출력 파일명 지정)
+- `--show-hf-progress` (기본은 HF 진행바 비표시)
+
+예시(3분 테스트 + VAD + 출력명 지정):
 
 ```bash
-python mlx-whisper-translate.py "/path/to/folder"
+.venv/bin/python mlx-qwen-transcribe.py "/path/to/input.mp4" \
+  --max-seconds 180 \
+  --vad-preprocess \
+  --force \
+  --original-output "/path/to/qwen-original-3m.srt"
 ```
 
-언어 지정 예시(일본어 음성 -> 한국어 번역):
+### C. TranslateGemma로 번역만 수행
+
+기본(파일/폴더 입력 시 `-original.srt`를 찾아 번역):
 
 ```bash
-python mlx-whisper-translate.py ./target_files --lang ja --target-lang ko
+.venv/bin/python mlx-translategemma.py "./target_files" --lang ja --target-lang ko
 ```
 
-Whisper 모델 지정 예시(더 빠른 모델 사용):
+직접 SRT 지정:
 
 ```bash
-python mlx-whisper-translate.py ./target_files --whisper-model mlx-community/whisper-small
+.venv/bin/python mlx-translategemma.py \
+  --original-srt "/path/to/input-original.srt" \
+  --output-srt "/path/to/output-ko.srt" \
+  --lang ja \
+  --target-lang ko \
+  --force
 ```
 
-Whisper 정확도 우선 모드:
+자주 쓰는 옵션:
+
+- `--batch-size`
+- `--max-retries`
+- `--retry-delay`
+- `--force`
+
+## 4) 호환 래퍼 사용법
+
+### 기존 Whisper 전체 파이프라인 (호환)
 
 ```bash
-python mlx-whisper-translate.py ./target_files --whisper-accurate
+.venv/bin/python mlx-whisper-translate.py "/path/to/input.mp4" \
+  --lang ja \
+  --target-lang ko \
+  --max-seconds 180 \
+  --force
 ```
 
-## 5) 주요 옵션
+내부적으로:
+
+1. `mlx-whisper-transcribe.py`
+2. `mlx-translategemma.py`
+
+순서로 실행됩니다.
+
+### Qwen 전체 파이프라인 (신규 래퍼)
 
 ```bash
-python mlx-whisper-translate.py --help
+.venv/bin/python mlx-qwen-translate.py "/path/to/input.mp4" \
+  --lang ja \
+  --target-lang ko \
+  --vad-preprocess \
+  --max-seconds 180 \
+  --force
 ```
 
-- `input_path`: 처리할 파일/폴더 경로 (기본 `./target_files`)
-- `--whisper-model`: Whisper 모델 (기본 `mlx-community/whisper-medium`)
-- `--whisper-accurate`: Whisper 정확도 우선 옵션 사용 (기본은 속도 우선)
-- `--lang`: Whisper 입력 언어 코드 (기본 `ja`)
-- `--target-lang`: 번역 대상 언어 코드 (기본 `ko`)
-- `--progress-every`: 진행 로그 간격 (기본 `10`)
-- `--max-retries`: 번역 재시도 횟수 (기본 `2`)
-- `--retry-delay`: 재시도 간 대기(초) (기본 `0.5`)
-- `--batch-size`: 번역 배치 크기 (기본 `1`, 즉 기본은 배치 번역 비활성)
+내부적으로:
 
-## 6) 출력 파일 및 덮어쓰기 규칙
+1. `mlx-qwen-transcribe.py`
+2. `mlx-translategemma.py`
 
-입력 파일이 `movie.mp4`라면:
+순서로 실행됩니다.
 
-- 원문 자막: `movie-original.srt`
-- 번역 자막: `movie.srt`
+## 5) 자막 정리(공통)
 
-이미 파일이 있으면 각각 덮어쓰기 여부를 묻습니다.
+`subtitle_cleanup.py`에서 Whisper/Qwen 공통으로 적용:
 
-- `y`/`yes`: 덮어쓰기
-- 엔터 포함 그 외 입력: 덮어쓰지 않음
+- 빈 텍스트 제거
+- `end < start` 제거
+- `end == start` 구간 최소 길이 보정
+- 반복 노이즈 제거
+- 중복 문장 제거
 
-둘 다 덮어쓰지 않으면 해당 파일 처리를 건너뜁니다.
+## 6) 트러블슈팅
 
-## 7) 성능 팁
-
-- Whisper 기본값은 속도 우선 프리셋 + `mlx-community/whisper-medium`
-- 더 빠르게 처리하려면 `--whisper-model mlx-community/whisper-small` 사용
-- 정확도를 높이고 싶으면 `--whisper-accurate` 사용(대신 느려질 수 있음)
-- 가장 큰 영향: 번역 모델 크기
-  - 현재 기본: `mlx-community/translategemma-4b-it-4bit`
-- `--max-retries 0`으로 재시도 비활성화 시 속도 개선 가능
-- 자막에 반복 문장이 많을수록 번역 캐시로 시간 절약
-- 배치 번역은 모델 출력 형식에 따라 분할 실패가 날 수 있으므로 기본 비활성(`--batch-size 1`)
-
-## 8) 문제 해결
-
-- `ffmpeg` 오류: 설치 확인 후 재실행
-- 언어 코드 오류: `--lang`, `--target-lang` 값 확인
-- HF 경고: `HF_TOKEN` 설정 시 다운로드 속도/요청 한도 개선
+- `ffmpeg` 오류:
+  - 설치 확인: `brew install ffmpeg`
+- `mlx_*` import 오류:
+  - 반드시 `.venv` 인터프리터 사용
+  - 예: `.venv/bin/python ...`
+- Qwen 모델 401/Repo 오류:
+  - 모델 ID 확인
+  - HF 인증 확인 (`HF_TOKEN`)
+- 번역에 원문이 남는 경우:
+  - `mlx-translategemma.py`는 미번역/원문 유지 출력 감지 후 재시도하도록 되어 있음
+  - 반복 발생 시 `--max-retries` 증가 고려
