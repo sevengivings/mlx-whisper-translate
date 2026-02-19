@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any, Optional
+
+from model_picker import choose_model_online
 from subtitle_cleanup import sanitize_segments as sanitize_segments_shared
 try:
     from tqdm import tqdm
@@ -603,6 +605,11 @@ def main() -> None:
         help=f"ASR 모델 (기본: {ASR_MODEL})",
     )
     parser.add_argument(
+        "--choose-model",
+        action="store_true",
+        help="온라인에서 mlx-community Qwen3-ASR 모델 목록을 조회해 번호로 선택",
+    )
+    parser.add_argument(
         "--lang",
         default=DEFAULT_LANGUAGE,
         help=f"입력 언어 코드 (기본: {DEFAULT_LANGUAGE})",
@@ -693,6 +700,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     _USE_TQDM_WRITE = (tqdm is not None and not args.no_progress)
+
+    if args.choose_model:
+        args.asr_model = choose_model_online("qwen3_asr", args.asr_model)
 
     if not args.show_hf_progress:
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"

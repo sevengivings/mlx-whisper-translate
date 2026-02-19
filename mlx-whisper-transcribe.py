@@ -7,6 +7,7 @@ import tempfile
 
 import mlx_whisper
 
+from model_picker import choose_model_online
 from subtitle_cleanup import sanitize_segments
 
 INPUT_PATH = "./target_files"
@@ -95,6 +96,11 @@ def main() -> None:
         default=WHISPER_MODEL,
         help=f"Whisper 모델 (기본: {WHISPER_MODEL})",
     )
+    parser.add_argument(
+        "--choose-model",
+        action="store_true",
+        help="온라인에서 mlx-community Whisper 모델 목록을 조회해 번호로 선택",
+    )
     parser.add_argument("--lang", default=DEFAULT_WHISPER_LANGUAGE, help="Whisper 입력 언어 코드 (기본: ja)")
     parser.add_argument(
         "--whisper-accurate",
@@ -118,6 +124,9 @@ def main() -> None:
         help="원문 SRT 출력 파일 경로(단일 파일 입력일 때만 사용)",
     )
     args = parser.parse_args()
+
+    if args.choose_model:
+        args.whisper_model = choose_model_online("whisper", args.whisper_model)
 
     if not os.getenv("HF_TOKEN"):
         print("경고: HF_TOKEN이 설정되지 않았습니다. 다운로드 속도/요청 한도가 낮을 수 있습니다.")

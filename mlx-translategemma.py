@@ -4,8 +4,15 @@ import os
 import re
 import time
 
+import mlx.core as mx
+
+# Backward-compat shim for libs still calling deprecated mx.metal.device_info.
+if hasattr(mx, "device_info") and hasattr(mx, "metal") and hasattr(mx.metal, "device_info"):
+    mx.metal.device_info = mx.device_info
+
 from mlx_lm import generate, load
 
+from model_picker import choose_model_online
 try:
     from tqdm import tqdm
 except ImportError:
@@ -223,12 +230,25 @@ def main() -> None:
     parser.add_argument("--output-srt", default=None, help="번역 결과 SRT 파일 경로(직접 지정)")
     parser.add_argument("--lang", default=DEFAULT_SOURCE_LANGUAGE, help="원문 언어 코드 (기본: ja)")
     parser.add_argument("--target-lang", default=DEFAULT_TARGET_LANGUAGE, help="번역 대상 언어 코드 (기본: ko)")
+    parser.add_argument(
+        "--translate-model",
+        default=TRANSLATE_MODEL,
+        help=f"TranslateGemma 모델 (기본: {TRANSLATE_MODEL})",
+    )
+    parser.add_argument(
+        "--choose-model",
+        action="store_true",
+        help="온라인에서 mlx-community TranslateGemma 모델 목록을 조회해 번호로 선택",
+    )
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY, help="번역 진행 로그 간격")
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="번역 재시도 횟수")
     parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="재시도 대기 시간(초)")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="번역 배치 크기")
     parser.add_argument("--force", action="store_true", help="기존 번역 .srt를 확인 없이 덮어쓰기")
     args = parser.parse_args()
+
+    if args.choose_model:
+        args.translate_model = choose_model_online("translategemma", args.translate_model)
 
     if args.output_srt and not args.original_srt:
         print("오류: --output-srt를 사용하려면 --original-srt도 함께 지정해야 합니다.")
@@ -288,8 +308,8 @@ def main() -> None:
                 }
             )
 
-    print(f"--- 모델 로드 중: {TRANSLATE_MODEL} ---")
-    model, tokenizer = load(TRANSLATE_MODEL)
+    print(f"--- 모델 로드 중: {args.translate_model} ---")
+    model, tokenizer = load(args.translate_model)
     ok, err = validate_language_pair(tokenizer, args.lang, args.target_lang)
     if not ok:
         print(f"오류: 유효하지 않은 언어 코드 조합입니다. source='{args.lang}', target='{args.target_lang}'")

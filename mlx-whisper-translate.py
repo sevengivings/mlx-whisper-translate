@@ -11,6 +11,7 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_MAX_SECONDS = 0.0
+TRANSLATE_MODEL = "mlx-community/translategemma-4b-it-4bit"
 
 
 def run_step(cmd: list[str], label: str) -> int:
@@ -29,6 +30,16 @@ def main() -> None:
     parser.add_argument("--whisper-model", default=WHISPER_MODEL, help=f"Whisper 모델 (기본: {WHISPER_MODEL})")
     parser.add_argument("--lang", default=DEFAULT_WHISPER_LANGUAGE, help="Whisper 입력 언어 코드 (기본: ja)")
     parser.add_argument("--target-lang", default=DEFAULT_TARGET_LANGUAGE, help="번역 대상 언어 코드 (기본: ko)")
+    parser.add_argument(
+        "--translate-model",
+        default=TRANSLATE_MODEL,
+        help=f"TranslateGemma 모델 (기본: {TRANSLATE_MODEL})",
+    )
+    parser.add_argument(
+        "--choose-model",
+        action="store_true",
+        help="Whisper/TranslateGemma 모델을 온라인 목록에서 번호로 선택",
+    )
     parser.add_argument("--whisper-accurate", action="store_true", help="Whisper 정확도 우선 옵션 사용")
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY, help="번역 진행 로그 간격")
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="구간 번역 재시도 횟수")
@@ -53,6 +64,8 @@ def main() -> None:
     ]
     if args.whisper_accurate:
         whisper_cmd.append("--whisper-accurate")
+    if args.choose_model:
+        whisper_cmd.append("--choose-model")
     if args.force:
         whisper_cmd.append("--force")
     if args.max_seconds and args.max_seconds > 0:
@@ -70,6 +83,8 @@ def main() -> None:
         args.lang,
         "--target-lang",
         args.target_lang,
+        "--translate-model",
+        args.translate_model,
         "--progress-every",
         str(args.progress_every),
         "--max-retries",
@@ -79,6 +94,8 @@ def main() -> None:
         "--batch-size",
         str(args.batch_size),
     ]
+    if args.choose_model:
+        translate_cmd.append("--choose-model")
     if args.force:
         translate_cmd.append("--force")
     rc = run_step(translate_cmd, "TranslateGemma 번역")

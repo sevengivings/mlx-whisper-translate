@@ -196,3 +196,28 @@ export HF_TOKEN="hf_xxx"
 - 번역에 원문이 남는 경우:
   - `mlx-translategemma.py`는 미번역/원문 유지 출력 감지 후 재시도하도록 되어 있음
   - 반복 발생 시 `--max-retries` 증가 고려
+
+## 7) 팁 (고급): `--choose-model`
+
+모델을 직접 고르고 싶다면 `--choose-model` 옵션을 사용할 수 있습니다.
+실행 시 온라인에서 `mlx-community` 모델 목록을 조회하고, 번호를 선택합니다.
+
+- Whisper: 대표 모델만 축약 표시
+- Qwen3-ASR / TranslateGemma: 사용 가능한 모델 목록 표시
+
+예시:
+
+```bash
+# Whisper 원문 추출
+.venv/bin/python mlx-whisper-transcribe.py "./target_files" --choose-model
+
+# Qwen 원문 추출
+.venv/bin/python mlx-qwen-transcribe.py "./target_files" --choose-model
+
+# TranslateGemma 번역
+.venv/bin/python mlx-translategemma.py "./target_files" --choose-model
+
+# 래퍼에서도 사용 가능 (ASR + 번역 단계 각각 선택)
+.venv/bin/python mlx-whisper-translate.py "./target_files" --choose-model
+.venv/bin/python mlx-qwen-translate.py "./target_files" --choose-model
+```

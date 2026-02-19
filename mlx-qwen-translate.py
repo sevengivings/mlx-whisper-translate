@@ -13,6 +13,7 @@ DEFAULT_BATCH_SIZE = 1
 DEFAULT_CHUNK_DURATION = 30.0
 DEFAULT_MIN_CHUNK_DURATION = 1.0
 DEFAULT_MAX_SECONDS = 0.0
+TRANSLATE_MODEL = "mlx-community/translategemma-4b-it-4bit"
 
 
 def run_step(cmd: list[str], label: str) -> int:
@@ -31,6 +32,16 @@ def main() -> None:
     parser.add_argument("--asr-model", default=ASR_MODEL, help=f"ASR 모델 (기본: {ASR_MODEL})")
     parser.add_argument("--lang", default=DEFAULT_SOURCE_LANGUAGE, help="원문 언어 코드 (기본: ja)")
     parser.add_argument("--target-lang", default=DEFAULT_TARGET_LANGUAGE, help="번역 대상 언어 코드 (기본: ko)")
+    parser.add_argument(
+        "--translate-model",
+        default=TRANSLATE_MODEL,
+        help=f"TranslateGemma 모델 (기본: {TRANSLATE_MODEL})",
+    )
+    parser.add_argument(
+        "--choose-model",
+        action="store_true",
+        help="Qwen3-ASR/TranslateGemma 모델을 온라인 목록에서 번호로 선택",
+    )
     parser.add_argument("--force", action="store_true", help="기존 SRT가 있어도 확인 없이 덮어쓰기")
     parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS, help="테스트용 최대 처리 길이(초)")
     parser.add_argument("--chunk-duration", type=float, default=DEFAULT_CHUNK_DURATION, help="Qwen ASR 청크 길이(초)")
@@ -61,6 +72,8 @@ def main() -> None:
     ]
     if args.vad_preprocess:
         qwen_cmd.append("--vad-preprocess")
+    if args.choose_model:
+        qwen_cmd.append("--choose-model")
     if args.force:
         qwen_cmd.append("--force")
     if args.max_seconds and args.max_seconds > 0:
@@ -78,6 +91,8 @@ def main() -> None:
         args.lang,
         "--target-lang",
         args.target_lang,
+        "--translate-model",
+        args.translate_model,
         "--progress-every",
         str(args.progress_every),
         "--max-retries",
@@ -87,6 +102,8 @@ def main() -> None:
         "--batch-size",
         str(args.batch_size),
     ]
+    if args.choose_model:
+        translate_cmd.append("--choose-model")
     if args.force:
         translate_cmd.append("--force")
 
