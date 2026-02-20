@@ -11,6 +11,8 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_MAX_SECONDS = 0.0
+DEFAULT_THROTTLE_MS = 0
+DEFAULT_DEVICE = "gpu"
 TRANSLATE_MODEL = "mlx-community/translategemma-4b-it-4bit"
 
 
@@ -45,9 +47,22 @@ def main() -> None:
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="구간 번역 재시도 횟수")
     parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="재시도 대기 시간(초)")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="번역 배치 크기")
+    parser.add_argument(
+        "--throttle-ms",
+        type=int,
+        default=DEFAULT_THROTTLE_MS,
+        help=f"파일/배치 처리 간 대기 시간(ms, 기본: {DEFAULT_THROTTLE_MS})",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default=DEFAULT_DEVICE,
+        help=f"MLX 실행 디바이스 선택 (기본: {DEFAULT_DEVICE})",
+    )
     parser.add_argument("--force", action="store_true", help="기존 SRT가 있어도 확인 없이 덮어쓰기")
     parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS, help="테스트용 최대 처리 길이(초)")
     args = parser.parse_args()
+    args.throttle_ms = max(0, args.throttle_ms)
 
     print("안내: 이 파일은 호환 래퍼입니다.")
     print("  - 원문 추출: mlx-whisper-transcribe.py")
@@ -61,6 +76,10 @@ def main() -> None:
         args.whisper_model,
         "--lang",
         args.lang,
+        "--throttle-ms",
+        str(args.throttle_ms),
+        "--device",
+        args.device,
     ]
     if args.whisper_accurate:
         whisper_cmd.append("--whisper-accurate")
@@ -93,6 +112,10 @@ def main() -> None:
         str(args.retry_delay),
         "--batch-size",
         str(args.batch_size),
+        "--throttle-ms",
+        str(args.throttle_ms),
+        "--device",
+        args.device,
     ]
     if args.choose_model:
         translate_cmd.append("--choose-model")

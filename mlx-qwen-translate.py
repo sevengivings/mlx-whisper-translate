@@ -13,6 +13,8 @@ DEFAULT_BATCH_SIZE = 1
 DEFAULT_CHUNK_DURATION = 30.0
 DEFAULT_MIN_CHUNK_DURATION = 1.0
 DEFAULT_MAX_SECONDS = 0.0
+DEFAULT_THROTTLE_MS = 0
+DEFAULT_DEVICE = "gpu"
 TRANSLATE_MODEL = "mlx-community/translategemma-4b-it-4bit"
 
 
@@ -46,12 +48,37 @@ def main() -> None:
     parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS, help="테스트용 최대 처리 길이(초)")
     parser.add_argument("--chunk-duration", type=float, default=DEFAULT_CHUNK_DURATION, help="Qwen ASR 청크 길이(초)")
     parser.add_argument("--min-chunk-duration", type=float, default=DEFAULT_MIN_CHUNK_DURATION, help="Qwen ASR 최소 청크 길이(초)")
-    parser.add_argument("--vad-preprocess", action="store_true", help="ffmpeg silencedetect 기반 VAD 전처리 사용")
+    parser.add_argument(
+        "--vad-preprocess",
+        dest="vad_preprocess",
+        action="store_true",
+        default=True,
+        help="ffmpeg silencedetect 기반 VAD 전처리 사용 (기본: 사용)",
+    )
+    parser.add_argument(
+        "--no-vad-preprocess",
+        dest="vad_preprocess",
+        action="store_false",
+        help="ffmpeg silencedetect 기반 VAD 전처리 비활성화",
+    )
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY, help="번역 진행 로그 간격")
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="구간 번역 재시도 횟수")
     parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="재시도 대기 시간(초)")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="번역 배치 크기")
+    parser.add_argument(
+        "--throttle-ms",
+        type=int,
+        default=DEFAULT_THROTTLE_MS,
+        help=f"파일/배치 처리 간 대기 시간(ms, 기본: {DEFAULT_THROTTLE_MS})",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default=DEFAULT_DEVICE,
+        help=f"MLX 실행 디바이스 선택 (기본: {DEFAULT_DEVICE})",
+    )
     args = parser.parse_args()
+    args.throttle_ms = max(0, args.throttle_ms)
 
     print("안내: 이 파일은 호환 래퍼입니다.")
     print("  - 원문 추출: mlx-qwen-transcribe.py")
@@ -69,9 +96,15 @@ def main() -> None:
         str(args.chunk_duration),
         "--min-chunk-duration",
         str(args.min_chunk_duration),
+        "--throttle-ms",
+        str(args.throttle_ms),
+        "--device",
+        args.device,
     ]
     if args.vad_preprocess:
         qwen_cmd.append("--vad-preprocess")
+    else:
+        qwen_cmd.append("--no-vad-preprocess")
     if args.choose_model:
         qwen_cmd.append("--choose-model")
     if args.force:
@@ -101,6 +134,10 @@ def main() -> None:
         str(args.retry_delay),
         "--batch-size",
         str(args.batch_size),
+        "--throttle-ms",
+        str(args.throttle_ms),
+        "--device",
+        args.device,
     ]
     if args.choose_model:
         translate_cmd.append("--choose-model")

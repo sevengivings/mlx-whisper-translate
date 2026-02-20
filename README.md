@@ -92,7 +92,8 @@ export HF_TOKEN="hf_xxx"
 자주 쓰는 옵션:
 
 - `--asr-model` (기본: `mlx-community/Qwen3-ASR-1.7B-4bit`)
-- `--vad-preprocess` (VAD 전처리)
+- `--vad-preprocess` (VAD 전처리, 기본값으로 켜짐)
+- `--no-vad-preprocess` (VAD 전처리 끄기)
 - `--chunk-duration`, `--min-chunk-duration`
 - `--max-seconds` (테스트용 앞부분만 처리)
 - `--max-sub-duration`, `--max-sub-chars`, `--min-sub-duration` (SRT 후처리 분할)
@@ -105,7 +106,6 @@ export HF_TOKEN="hf_xxx"
 ```bash
 .venv/bin/python mlx-qwen-transcribe.py "/path/to/input.mp4" \
   --max-seconds 180 \
-  --vad-preprocess \
   --force \
   --original-output "/path/to/qwen-original-3m.srt"
 ```
@@ -161,7 +161,6 @@ export HF_TOKEN="hf_xxx"
 .venv/bin/python mlx-qwen-translate.py "/path/to/input.mp4" \
   --lang ja \
   --target-lang ko \
-  --vad-preprocess \
   --max-seconds 180 \
   --force
 ```
@@ -197,7 +196,9 @@ export HF_TOKEN="hf_xxx"
   - `mlx-translategemma.py`는 미번역/원문 유지 출력 감지 후 재시도하도록 되어 있음
   - 반복 발생 시 `--max-retries` 증가 고려
 
-## 7) 팁 (고급): `--choose-model`
+## 7) 팁 (고급)
+
+### 7-1) `--choose-model`
 
 모델을 직접 고르고 싶다면 `--choose-model` 옵션을 사용할 수 있습니다.
 실행 시 온라인에서 `mlx-community` 모델 목록을 조회하고, 번호를 선택합니다.
@@ -221,3 +222,36 @@ export HF_TOKEN="hf_xxx"
 .venv/bin/python mlx-whisper-translate.py "./target_files" --choose-model
 .venv/bin/python mlx-qwen-translate.py "./target_files" --choose-model
 ```
+
+### 7-2) 발열 줄이기(속도보다 온도 우선)
+
+
+핵심 옵션:
+
+- `--device cpu|gpu`: CPU로 돌리면 발열이 크게 줄지만 속도는 가장 느립니다.
+- `--throttle-ms`: 작업 단위 사이에 쉬는 시간(ms)을 넣어 평균 발열을 낮춥니다.
+- `--batch-size 1`(번역): GPU 피크를 낮추는 데 유리합니다.
+
+추천값(맥북 에어 기준, 느려져도 온도 우선):
+
+- 저발열 균형(권장 시작값): `--device gpu --throttle-ms 150 --batch-size 1`
+- 최저 발열(가장 느림): `--device cpu --throttle-ms 300 --batch-size 1`
+
+예시:
+
+```bash
+# Whisper + 번역 전체 파이프라인: 저발열 균형
+.venv/bin/python mlx-whisper-translate.py "/path/to/input.mp4" \
+  --lang ja --target-lang ko \
+  --device gpu --throttle-ms 150 --batch-size 1
+
+# Qwen + 번역 전체 파이프라인: 최저 발열(가장 느림)
+.venv/bin/python mlx-qwen-translate.py "/path/to/input.mp4" \
+  --lang ja --target-lang ko \
+  --device cpu --throttle-ms 300 --batch-size 1
+```
+
+참고:
+
+- Qwen은 현재 VAD 전처리가 기본 ON입니다. 필요하면 `--no-vad-preprocess`로 끌 수 있습니다. 구간마다 처리하여 오버헤드는 증가합니다. 
+- mlx-community/Qwen3-ASR-1.7B-4bit 모델을 CPU로 지정하면 음성 단절 처리기 VAD로 잘라낸 하나의 세그먼트 처리에 10분이 소요될 수 있으므로 현실적이지 않습니다. 

@@ -30,6 +30,8 @@ DEFAULT_PROGRESS_EVERY = 10
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 0.5
 DEFAULT_BATCH_SIZE = 1
+DEFAULT_THROTTLE_MS = 0
+DEFAULT_DEVICE = "gpu"
 
 
 def format_time(seconds: float) -> str:
@@ -223,6 +225,13 @@ def validate_language_pair(tokenizer, source_lang: str, target_lang: str) -> tup
         return False, str(e)
 
 
+def configure_device(device: str) -> None:
+    selected = (device or DEFAULT_DEVICE).lower()
+    target_device = mx.cpu if selected == "cpu" else mx.gpu
+    mx.set_default_device(target_device)
+    print(f"--- MLX 디바이스 설정: {selected} ---")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="TranslateGemma(MLX)로 -original.srt를 번역 SRT로 변환")
     parser.add_argument("input_path", nargs="?", default=INPUT_PATH, help="처리할 파일/폴더 경로")
@@ -244,8 +253,23 @@ def main() -> None:
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="번역 재시도 횟수")
     parser.add_argument("--retry-delay", type=float, default=DEFAULT_RETRY_DELAY, help="재시도 대기 시간(초)")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="번역 배치 크기")
+    parser.add_argument(
+        "--throttle-ms",
+        type=int,
+        default=DEFAULT_THROTTLE_MS,
+        help=f"배치 처리 간 대기 시간(ms, 기본: {DEFAULT_THROTTLE_MS})",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default=DEFAULT_DEVICE,
+        help=f"MLX 실행 디바이스 선택 (기본: {DEFAULT_DEVICE})",
+    )
     parser.add_argument("--force", action="store_true", help="기존 번역 .srt를 확인 없이 덮어쓰기")
     args = parser.parse_args()
+    args.throttle_ms = max(0, args.throttle_ms)
+
+    configure_device(args.device)
 
     if args.choose_model:
         args.translate_model = choose_model_online("translategemma", args.translate_model)
@@ -412,6 +436,8 @@ def main() -> None:
                 elif current % progress_every == 0 or current == len(segments):
                     elapsed = time.time() - translate_start
                     print(f"    · 번역 진행: {current}/{len(segments)} ({elapsed:.1f}s, cache hit {cache_hits})")
+                if args.throttle_ms > 0 and current < len(segments):
+                    time.sleep(args.throttle_ms / 1000.0)
 
         if progress_bar is not None:
             progress_bar.close()

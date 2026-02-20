@@ -4,7 +4,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 
+import mlx.core as mx
 import mlx_whisper
 
 from model_picker import choose_model_online
@@ -15,6 +17,8 @@ EXTENSIONS = (".mp3", ".wav", ".m4a", ".mp4", ".mkv")
 WHISPER_MODEL = "mlx-community/whisper-medium"
 DEFAULT_WHISPER_LANGUAGE = "ja"
 DEFAULT_MAX_SECONDS = 0.0
+DEFAULT_THROTTLE_MS = 0
+DEFAULT_DEVICE = "gpu"
 
 WHISPER_OPTIONS_FAST = {
     "word_timestamps": False,
@@ -88,6 +92,13 @@ def extract_head_to_temp_wav(input_path: str, max_seconds: float) -> str:
     return temp_wav
 
 
+def configure_device(device: str) -> None:
+    selected = (device or DEFAULT_DEVICE).lower()
+    target_device = mx.cpu if selected == "cpu" else mx.gpu
+    mx.set_default_device(target_device)
+    print(f"--- MLX 디바이스 설정: {selected} ---")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Whisper(MLX)로 원문 SRT(-original.srt) 생성")
     parser.add_argument("input_path", nargs="?", default=INPUT_PATH, help="처리할 파일/폴더 경로")
@@ -119,11 +130,26 @@ def main() -> None:
         help="테스트용 최대 처리 길이(초). 0이면 전체 처리",
     )
     parser.add_argument(
+        "--throttle-ms",
+        type=int,
+        default=DEFAULT_THROTTLE_MS,
+        help=f"파일 처리 간 대기 시간(ms, 기본: {DEFAULT_THROTTLE_MS})",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default=DEFAULT_DEVICE,
+        help=f"MLX 실행 디바이스 선택 (기본: {DEFAULT_DEVICE})",
+    )
+    parser.add_argument(
         "--original-output",
         default=None,
         help="원문 SRT 출력 파일 경로(단일 파일 입력일 때만 사용)",
     )
     args = parser.parse_args()
+    args.throttle_ms = max(0, args.throttle_ms)
+
+    configure_device(args.device)
 
     if args.choose_model:
         args.whisper_model = choose_model_online("whisper", args.whisper_model)
@@ -210,6 +236,8 @@ def main() -> None:
 
         write_srt(original_output_path, segments)
         print(f"  - 원문 SRT 완료: {original_output_path}\n")
+        if args.throttle_ms > 0 and idx < len(files):
+            time.sleep(args.throttle_ms / 1000.0)
 
     print("==========================================")
     print("Whisper 원문 자막 생성이 완료되었습니다!")

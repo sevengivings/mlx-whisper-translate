@@ -6,8 +6,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any, Optional
 
+import mlx.core as mx
 from model_picker import choose_model_online
 from subtitle_cleanup import sanitize_segments as sanitize_segments_shared
 try:
@@ -56,6 +58,8 @@ DEFAULT_MAX_SUB_DURATION = 8.0
 DEFAULT_MAX_SUB_CHARS = 28
 DEFAULT_MIN_SUB_DURATION = 0.8
 DEFAULT_MAX_SECONDS = 0.0
+DEFAULT_THROTTLE_MS = 0
+DEFAULT_DEVICE = "gpu"
 
 _STT_MODEL_CACHE: dict[str, Any] = {}
 _USE_TQDM_WRITE = False
@@ -66,6 +70,13 @@ def log(message: str = "") -> None:
         tqdm.write(message)
     else:
         print(message)
+
+
+def configure_device(device: str) -> None:
+    selected = (device or DEFAULT_DEVICE).lower()
+    target_device = mx.cpu if selected == "cpu" else mx.gpu
+    mx.set_default_device(target_device)
+    log(f"--- MLX 디바이스 설정: {selected} ---")
 
 
 def format_time(seconds: float) -> str:
@@ -322,6 +333,7 @@ def run_vad_preprocessed_transcription(
     vad_min_silence: float,
     vad_min_segment: float,
     vad_merge_gap: float,
+    throttle_ms: int,
     use_progress: bool,
     input_is_wav: bool = False,
 ) -> None:
@@ -369,6 +381,8 @@ def run_vad_preprocessed_transcription(
                             "text": s["text"],
                         }
                     )
+                if throttle_ms > 0 and seg_idx < len(voiced_intervals):
+                    time.sleep(throttle_ms / 1000.0)
 
         merged_segments = sanitize_segments(sorted(merged_segments, key=lambda x: x["start"]))
         if not merged_segments:
@@ -638,8 +652,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--vad-preprocess",
+        dest="vad_preprocess",
         action="store_true",
-        help="ffmpeg silencedetect 기반 VAD 전처리 사용",
+        default=True,
+        help="ffmpeg silencedetect 기반 VAD 전처리 사용 (기본: 사용)",
+    )
+    parser.add_argument(
+        "--no-vad-preprocess",
+        dest="vad_preprocess",
+        action="store_false",
+        help="ffmpeg silencedetect 기반 VAD 전처리 비활성화",
     )
     parser.add_argument(
         "--vad-noise",
@@ -689,6 +711,18 @@ def main() -> None:
         help="테스트용 최대 처리 길이(초). 0이면 전체 처리",
     )
     parser.add_argument(
+        "--throttle-ms",
+        type=int,
+        default=DEFAULT_THROTTLE_MS,
+        help=f"파일/청크 처리 간 대기 시간(ms, 기본: {DEFAULT_THROTTLE_MS})",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default=DEFAULT_DEVICE,
+        help=f"MLX 실행 디바이스 선택 (기본: {DEFAULT_DEVICE})",
+    )
+    parser.add_argument(
         "--show-hf-progress",
         action="store_true",
         help="Hugging Face 다운로드 진행바 표시(기본: 비표시)",
@@ -699,7 +733,10 @@ def main() -> None:
         help="원문 SRT 출력 파일 경로(단일 파일 입력일 때만 사용)",
     )
     args = parser.parse_args()
+    args.throttle_ms = max(0, args.throttle_ms)
     _USE_TQDM_WRITE = (tqdm is not None and not args.no_progress)
+
+    configure_device(args.device)
 
     if args.choose_model:
         args.asr_model = choose_model_online("qwen3_asr", args.asr_model)
@@ -790,6 +827,7 @@ def main() -> None:
                     vad_min_silence=args.vad_min_silence,
                     vad_min_segment=args.vad_min_segment,
                     vad_merge_gap=args.vad_merge_gap,
+                    throttle_ms=args.throttle_ms,
                     use_progress=not args.no_progress,
                 )
             else:
@@ -833,6 +871,7 @@ def main() -> None:
                         vad_min_silence=args.vad_min_silence,
                         vad_min_segment=args.vad_min_segment,
                         vad_merge_gap=args.vad_merge_gap,
+                        throttle_ms=args.throttle_ms,
                         use_progress=not args.no_progress,
                         input_is_wav=True,
                     )
@@ -849,6 +888,8 @@ def main() -> None:
                             f"max_chars={args.max_sub_chars})"
                         )
                     log(f"  - 완료: {original_output_path}\n")
+                    if args.throttle_ms > 0 and idx < len(files):
+                        time.sleep(args.throttle_ms / 1000.0)
                     continue
                 except Exception as fallback_error:
                     err = str(fallback_error)
@@ -866,6 +907,8 @@ def main() -> None:
                 os.remove(temp_audio_path)
             if temp_head_wav and os.path.exists(temp_head_wav):
                 os.remove(temp_head_wav)
+        if args.throttle_ms > 0 and idx < len(files):
+            time.sleep(args.throttle_ms / 1000.0)
 
 
 if __name__ == "__main__":
