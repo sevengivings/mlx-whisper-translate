@@ -14,7 +14,7 @@ from subtitle_cleanup import sanitize_segments
 
 INPUT_PATH = "./target_files"
 EXTENSIONS = (".mp3", ".wav", ".m4a", ".mp4", ".mkv")
-WHISPER_MODEL = "mlx-community/whisper-medium"
+WHISPER_MODEL = "mlx-community/whisper-medium"  # mlx-community/whisper-large-v3-turbo-asr-4bit
 DEFAULT_WHISPER_LANGUAGE = "ja"
 DEFAULT_MAX_SECONDS = 0.0
 DEFAULT_THROTTLE_MS = 0
