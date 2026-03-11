@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
@@ -9,12 +10,17 @@ import time
 import mlx.core as mx
 import mlx_whisper
 
+try:
+    from huggingface_hub import snapshot_download
+except Exception:
+    snapshot_download = None
+
 from model_picker import choose_model_online
 from subtitle_cleanup import sanitize_segments
 
 INPUT_PATH = "./target_files"
 EXTENSIONS = (".mp3", ".wav", ".m4a", ".mp4", ".mkv")
-WHISPER_MODEL = "mlx-community/whisper-medium"  # mlx-community/whisper-large-v3-turbo-asr-4bit
+WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo-4bit"
 DEFAULT_WHISPER_LANGUAGE = "ja"
 DEFAULT_MAX_SECONDS = 0.0
 DEFAULT_THROTTLE_MS = 0
@@ -99,6 +105,65 @@ def configure_device(device: str) -> None:
     print(f"--- MLX 디바이스 설정: {selected} ---")
 
 
+def normalize_whisper_model(model_id: str) -> str:
+    normalized = (model_id or "").strip()
+    if not normalized:
+        return WHISPER_MODEL
+
+    if normalized.startswith("mlx-community/") and "-asr-" in normalized:
+        fallback = normalized.replace("-asr-", "-")
+        print(
+            "안내: 선택한 Whisper 모델은 transformers ASR 포맷이라 mlx_whisper와 직접 호환되지 않습니다."
+        )
+        print(f"  - 자동 변경: {normalized} -> {fallback}")
+        print("  - 필요 시 --whisper-model로 다른 mlx-community Whisper 모델을 지정하세요.")
+        return fallback
+
+    return normalized
+
+
+def ensure_mlx_whisper_weights(model_dir: Path) -> None:
+    if (model_dir / "weights.safetensors").exists() or (model_dir / "weights.npz").exists():
+        return
+
+    fallback_pairs = (
+        ("model.safetensors", "weights.safetensors"),
+        ("model.npz", "weights.npz"),
+    )
+    for src_name, dst_name in fallback_pairs:
+        src = model_dir / src_name
+        dst = model_dir / dst_name
+        if not src.exists():
+            continue
+        if dst.exists():
+            return
+        try:
+            os.symlink(src, dst)
+            print(f"안내: 모델 파일명 호환 링크 생성 ({dst_name} -> {src_name})")
+        except OSError:
+            shutil.copy2(src, dst)
+            print(f"안내: 모델 파일명 호환 복사 생성 ({dst_name} <- {src_name})")
+        return
+
+
+def resolve_whisper_model_path(model_id: str) -> str:
+    model_path = Path(model_id)
+    if model_path.exists():
+        ensure_mlx_whisper_weights(model_path)
+        return str(model_path)
+
+    if snapshot_download is None:
+        return model_id
+
+    try:
+        snapshot_path = Path(snapshot_download(repo_id=model_id))
+        ensure_mlx_whisper_weights(snapshot_path)
+        return str(snapshot_path)
+    except Exception as e:
+        print(f"경고: 모델 스냅샷 확인에 실패했습니다. 원본 모델 ID로 진행합니다. ({e})")
+        return model_id
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Whisper(MLX)로 원문 SRT(-original.srt) 생성")
     parser.add_argument("input_path", nargs="?", default=INPUT_PATH, help="처리할 파일/폴더 경로")
@@ -153,6 +218,8 @@ def main() -> None:
 
     if args.choose_model:
         args.whisper_model = choose_model_online("whisper", args.whisper_model)
+    args.whisper_model = normalize_whisper_model(args.whisper_model)
+    args.whisper_model = resolve_whisper_model_path(args.whisper_model)
 
     if not os.getenv("HF_TOKEN"):
         print("경고: HF_TOKEN이 설정되지 않았습니다. 다운로드 속도/요청 한도가 낮을 수 있습니다.")
